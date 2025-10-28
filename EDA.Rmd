@@ -1,0 +1,331 @@
+---
+title: "EDA"
+output: html_document
+---
+
+# Differential Methylation Analysis Example (GSE111629)
+
+### 1. Install the necessary packages for Normalization of raw Methylation profiling data (.idat) and Differential Analysis.
+
+```{r}
+BiocManager::install("minfi")
+BiocManager::install("limma")
+BiocManager::install("DMRcate")
+BiocManager::install("missMethyl")
+BiocManager::install("FlowSorted.Blood.450k")
+BiocManager::install("clusterProfiler")
+```
+
+## Preprocessing
+
+### 2. Import the libraries
+
+```{r}
+library(tidyverse)
+library(limma)
+library(GEOquery)
+library(illuminaio)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+library(DMRcate)
+library(missMethyl)
+```
+
+### 3. Create a sample metadata table by reading the respective GSE file
+
+```{r}
+basedir <- "./GSE111629_RAW"
+targets <- read.metharray.sheet(basedir, pattern = "GPL13534_HumanMethylation450_15017482_v.1.1.csv.gz")
+```
+
+### 4. Extract phenotype data (pData) from the GEO Database
+
+```{r}
+gse <- getGEO('GSE111629', GSEMatrix = TRUE, getGPL = FALSE)
+pdata <- pData(gse[[1]])
+```
+
+### 5. Get the raw .idat files to match with the sample metadata
+
+```{r}
+basedir <- './GSE111629_RAW/'
+all_idat_files <- list.files(basedir, pattern = "\\.idat\\.gz$", full.names = FALSE)
+basenames <- unique(gsub("_(Grn|Red).idat.gz", "", all_idat_files))
+```
+
+### 6. Build the complete sample table for minfi
+
+```{r}
+targets <- data.frame(
+  Sample_Name = gsub("_.*", "", basenames),
+  Basename = file.path(basedir, basenames),
+  stringsAsFactors = FALSE
+)
+targets <- merge(targets, pdata, by.x = "Sample_Name", by.y = "row.names", all.x = TRUE)
+targets$Sample_Group <- factor(targets$`disease state:ch1`)
+targets <- targets %>% mutate(Sample_Group = case_when(Sample_Group == "Parkinson's disease (PD)" ~ "PD", Sample_Group == "PD-free control" ~ "Control"))
+targets$Sample_Group <- as.factor(targets$Sample_Group)
+```
+
+### 7. Read the raw intensity data from the .idat files
+
+```{r}
+rg_set <- read.metharray.exp(targets = targets, extended = TRUE)
+saveRDS(rg_set, "rg_set.rds")
+```
+
+### 7.a In case the file containing the intensity data is already available yet missing in the session, just read it and create the respective object
+
+```{r}
+if (!(exists("rg_set"))) {
+  rg_set = readRDS("rg_set.rds")
+}
+```
+
+### 8. Perform initial quality control on raw data
+
+i.  `preprocessRaw(rg_set)` -\> convert the green and red channel intensities `RGChannelSet` into methylated and unmethylated channel intensities (`MethylSet`) without normalization or background correction.
+ii. `getQC()` -\> calculate quality control metrics from the `MethylSet`. Compute the median methylated and unmethylated intensities across all probes for each sample.
+iii. `qc` -\> contains the median intensity values for each sample. Samples with low median intensities indicate poor quality or failed experiments.
+
+```{r}
+qc <- getQC(preprocessRaw(rg_set))
+plotQC(qc)
+```
+
+### 8a. In case there are bad samples select them by setting a suitable threshold and remove them from both intensities set and metadata
+
+```{r}
+bad_sample_index <- which(qc$mMed < 10.5 | qc$uMed < 10.5)
+rg_set_clean <- rg_set[, -bad_sample_index]
+targets_clean <- targets[-bad_sample_index, ]
+
+print(paste("Removed", length(bad_sample_index), "failed sample(s):"))
+print(sampleNames(rg_set)[bad_sample_index])
+
+qc_log <- data.frame(
+  Sample_Removed = sampleNames(rg_set)[bad_sample_index],
+  Reason = "Low median intensity in QC",
+  mMed_Intensity = qc$mMed[bad_sample_index],
+  uMed_Intensity = qc$uMed[bad_sample_index],
+  Date_Removed = Sys.Date()
+)
+
+write.csv(qc_log, "sample_removal_log.csv", row.names = FALSE)
+saveRDS(rg_set_clean, "rg_set_qc.rds")
+saveRDS(targets_clean, "targets_qc.rds")
+```
+
+### Cleanup
+
+```{r}
+rm(list = setdiff(ls(), c("targets", "rg_set_clean")))
+gc(full=T)
+```
+
+### 9. Display the distribution of Methylation values across all samples
+
+i.  Beta values are converted internally from raw intensities
+ii. X-axis represents beta values (0=fully unmethylated; 1=fully methylated)
+iii. It's good (quality) if samples from both groups show peaks near 0 and 1 - which indicates a mix of hyper- and hypo methylated probes
+iv. It's not good (quality) if samples are flat or shifted which could mean technical issues.
+
+**This plot is used to assess overall data quality and to get a first look at large-scale methylation differences between sample groups.**
+
+```{r}
+densityPlot(rg_set_clean, sampGroups = targets$Sample_Group, main = "Beta Value Distribution")
+```
+
+### 10. Normalize raw data via Normal-exponential out-of-the-band method (noob)
+
+i.  Background correction by using the "out-of-the-band" probes, that is where the color channel doesn't match the probe design, to estimate and subtract technical background noise.
+ii. `methyl_set` -\> result: contains background-corrected and dye-bias-normalized methylated (M) and unmethylated (U) signal intensities for each probe in each sample.
+
+**This step removes major technical artifacts from the data making the methylation values more comparable across samples and suitable for downstream technical analysis**
+
+```{r}
+methyl_set <- preprocessNoob(rg_set_clean)
+saveRDS(methyl_set, "methyl_set.rds")
+
+beta_matrix <- getBeta(methyl_set)
+m_values <- getM(methyl_set)
+saveRDS(beta_matrix, "beta_matrix.rds")
+saveRDS(m_values, "m_values.rds")
+```
+
+### 11. Principal Component Analysis
+
+-   The scope is to investigate for potential outliers and if found to interrogate for either being technically introduced or biologically justifiable.
+
+-   Candidacy for outliers is assumed for data points that bear pca scores whose Mahalanobis distances surpass a threshold of the 97.5 percentile in a chi2 distribution.
+
+-   Re-assessment of the potential outliers is performed by comparison of means and standard deviation to the majority of the set's datapoints.
+
+```{r}
+rm(list = setdiff(ls(), c("beta_matrix", "targets")))
+gc(full=T)
+```
+
+### Run PCA
+
+```{r}
+targets <- readRDS("targets_qc.rds")
+pca <- prcomp(t(beta_matrix))
+pca_df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  Sample_Group = targets$Sample_Group,
+  Gender = targets$`gender:ch1`,
+  Age = targets$`age:ch1`
+)
+saveRDS(pca_df, "pca_df.rds")
+```
+
+### Visualize
+
+```{r}
+plots <- list()
+plots[[1]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Sample_Group)) +
+  geom_point() + ggtitle("By Diagnosis")
+
+plots[[2]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Gender)) +
+  geom_point() + ggtitle("By Biological Gender")
+
+plots[[3]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = as.factor(1:nrow(pca_df)))) +
+  geom_point() + theme(legend.position = "none") + ggtitle("By Sample")
+
+library(viridis)
+pca_df$Age <- as.numeric(pca_df$Age)
+plots[[4]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Age)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "Age") +  # Better than default colors
+  ggtitle("PCA Colored by Age") +
+  theme_minimal()
+
+library(gridExtra)
+grid.arrange(grobs = plots, ncol = 2)
+```
+
+### Investigate potential outliers
+
+#### Mahalanobis distance for anything \>97.5% percentile on the first 2 PC's
+
+```{r}
+pca_scores <- pca$x[, 1:2]
+center <- colMeans(pca_scores)
+cov_matrix <- cov(pca_scores)
+distances <- mahalanobis(pca_scores, center, cov_matrix)
+outlier_threshold <- qchisq(0.975, df = 2)
+outliers <- which(distances > outlier_threshold)
+print("PCA outliers detected:")
+print(rownames(pca_scores)[outliers])
+```
+
+#### Show the outlier's metadata
+
+```{r}
+outlier_metadata <- targets[outliers, ]
+print("Outlier sample metadata:")
+print(outlier_metadata[, c("Sample_Group", "gender:ch1", "age:ch1")])
+print(table(outlier_metadata$Sample_Group))
+```
+
+#### Check how the beta values of the outliers look like compared to the non-outlier data points
+
+```{r}
+outlier_betas <- beta_matrix[, outliers]
+print("Outlier beta value ranges:")
+print(apply(outlier_betas, 2, function(x) c(mean = mean(x), sd = sd(x))))
+```
+
+```{r}
+non_outlier_betas <- beta_matrix[, -outliers]
+print("Non-outlier beta value ranges:")
+print(c(mean = mean(non_outlier_betas), sd = sd(non_outlier_betas)))
+```
+
+#### Display Outliers in a scatterplot
+
+```{r}
+outlier_samples <- rownames(pca_scores)[outliers]
+pca_df$Is_Outlier <- rownames(pca_df) %in% outlier_samples
+
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Is_Outlier, shape = Sample_Group)) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c("FALSE" = "gray", "TRUE" = "red")) +
+  ggtitle("PCA Showing Outlier Positions")
+```
+
+#### Summarize characteristics of the assumed outliers
+
+```{r}
+outlier_cases <- pca_df[pca_df$Is_Outlier & pca_df$Sample_Group == "PD", ]
+print("Characteristics of outlier cases:")
+outlier_metadata$`age:ch1` <- as.numeric(outlier_metadata$`age:ch1`)
+outlier_metadata$`gender:ch1` <- as.factor(outlier_metadata$`gender:ch1`)
+summary(outlier_metadata[outlier_metadata$Sample_Group == "PD", c("age:ch1", "gender:ch1")])
+write.csv(outlier_cases, file="./outlier_cases.csv")
+```
+
+*At this point it is important to mention that the above analysis is conducted with probes from sex-chromosomes present in the dataset. The spotted outliers which mostly consists of female case samples warrants further investigation. The biological meaning in regards to the disease cannot be reliably rejected nor confirmed at this stage. Thus a repetition of PCA will be conducted once the dataset is cleared of from sex-related probes, cross-reactional probes and SNPs.*
+
+### Investigate for Biological Gender Mismatch (due to mislabeling)
+
+```{r}
+rm(list = setdiff(ls(), c("targets")))
+gc(full = TRUE)
+```
+
+```{r}
+methyl_set <- readRDS("methyl_set.rds")
+methyl_set_genomic <- mapToGenome(methyl_set)
+
+predicted_sex <- getSex(methyl_set_genomic, cutoff = -2)
+sex_check <- data.frame(
+  Sample_Name = targets$Sample_Name,
+  Recorded_Sex = targets$`gender:ch1`,
+  Predicted_Sex = predicted_sex$predictedSex,
+  X_chr_median = predicted_sex$xMed,
+  Y_chr_median = predicted_sex$yMed
+)
+sex_check <- sex_check %>% mutate(
+  Predicted_Sex = case_when(Predicted_Sex == "M" ~ "Male", Predicted_Sex == "F" ~ "Female")
+)
+mismatches <- sex_check[sex_check$Recorded_Sex != sex_check$Predicted_Sex, ]
+print(mismatches)
+```
+
+```{r}
+ggplot(sex_check, aes(x = X_chr_median, y = Y_chr_median, 
+                               color = Recorded_Sex, 
+                               shape = Predicted_Sex)) +
+  geom_point(aes(shape = Predicted_Sex), size = 3, alpha = 0.5) +  scale_color_manual(values = c("Female" = "red", "Male" = "blue")) +
+  labs(x = "X Chromosome Median Intensity",
+       y = "Y Chromosome Median Intensity",
+       title = "Sex Prediction Quality Control",
+       color = "Recorded Sex",
+       shape = "Predicted Sex") +
+  theme_minimal() +
+  theme(legend.position = "bottom")
+```
+
+```{r}
+print(paste("Found", nrow(mismatches), "sex mismatches:"))
+print(mismatches)
+
+rg_set <- readRDS("rg_set_qc.rds")
+beta_matrix <- readRDS("beta_matrix.rds")
+m_values <- readRDS("m_values.rds")
+
+targets <- targets[-mismatch_indices, ]
+methyl_set_genomic <- methyl_set_genomic[, -mismatch_indices]
+methyl_set <- methyl_set[, -mismatch_indices]
+rg_set <- rg_set[,-mismatch_indices]
+beta_matrix <- beta_matrix[,-mismatch_indices]
+m_values <- m_values[,-mismatch_indices]
+
+saveRDS(targets, "targets_s_mismatch.rds")
+save_rds(methyl_set, "methyl_set_s_mismatch.rds")
+save_rds(rg_set, "rg_set_s_mismatch.rds")
+save_rds(beta_matrix, "beta_matrix_s_mismatch.rds")
+save_rds(m_values, "m_values_s_mismatch.rds")
+```

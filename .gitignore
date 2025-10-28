@@ -1,6 +1,12 @@
 # History files
 .Rhistory
 .Rapp.history
+.DS_Store
+*.Rproj
+
+*.rds
+
+GSE111629_RAW/**/*
 
 # Session Data files
 .RData
