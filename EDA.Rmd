@@ -324,8 +324,8 @@ beta_matrix <- beta_matrix[,-mismatch_indices]
 m_values <- m_values[,-mismatch_indices]
 
 saveRDS(targets, "targets_s_mismatch.rds")
-save_rds(methyl_set, "methyl_set_s_mismatch.rds")
-save_rds(rg_set, "rg_set_s_mismatch.rds")
-save_rds(beta_matrix, "beta_matrix_s_mismatch.rds")
-save_rds(m_values, "m_values_s_mismatch.rds")
+saveRDS(methyl_set, "methyl_set_s_mismatch.rds")
+saveRDS(rg_set, "rg_set_s_mismatch.rds")
+saveRDS(beta_matrix, "beta_matrix_s_mismatch.rds")
+saveRDS(m_values, "m_values_s_mismatch.rds")
 ```
