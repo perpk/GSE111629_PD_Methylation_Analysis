@@ -329,3 +329,38 @@ saveRDS(rg_set, "rg_set_s_mismatch.rds")
 saveRDS(beta_matrix, "beta_matrix_s_mismatch.rds")
 saveRDS(m_values, "m_values_s_mismatch.rds")
 ```
+
+```{r}
+rm(list = setdiff(ls(), c("targets")))
+```
+
+### 12. Probe Cleanup
+
+*During this step sex-chromosome related probes, SNP's and cross-reactive probes are removed from the methylation data set. Finally, PCA is repeated to view differences related to the pre-cleanup one*.
+
+#### 12.1 Remove Cross-Reactive Probes
+**Remove probes that are not specific to one genomic location. Cross-reactive probes can hybridize to multiple places in the genome, making their methylation signals uninterpretable and introducing noise into the analysis.**
+
+i.  Load the library that contains the annotation database specific for the 450k array with detailed information about each probe.
+ii. Create a list of probes that are known to be cross-reactive by focusing on Infinium type "I" probes (`c("I")`)
+
+```{r}
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+
+ann_450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+
+cross_reactive_probes <- read.csv("https://github.com/sirselim/illumina450k_filtering/raw/master/48639-non-specific-probes-Illumina450k.csv", header = TRUE)
+
+cross_reactive <- cross_reactive_probes$TargetID 
+
+methyl_set <- readRDS("methyl_set_s_mismatch.rds")
+
+print(paste("Original probes in dataset:", nrow(getBeta(methyl_set))))
+
+methyl_set <- methyl_set[!rownames(methyl_set) %in% cross_reactive, ]
+
+print(paste("Probes after removing cross-reactive probes:", nrow(methyl_set)))
+
+saveRDS(methyl_set, "methyl_set_removed_cross_reactive.rds")
+
+```
