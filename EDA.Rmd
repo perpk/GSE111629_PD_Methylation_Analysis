@@ -383,3 +383,21 @@ print(paste("Probes after removing cross-reactive probes:", nrow(methyl_set)))
 saveRDS(methyl_set, "methyl_set_removed_cross_reactive.rds")
 
 ```
+
+#### 13.2 Remove Single Nucleotide Polymorphisms
+
+```{r}
+rm(list=ls())
+gc(full=T)
+```
+
+```{r}
+ann_450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+methyl_set <- readRDS("methyl_set_removed_cross_reactive.rds")
+print(paste("Original probes in dataset:", nrow(getBeta(methyl_set))))
+methyl_set_genomic <- mapToGenome(methyl_set)
+methyl_set_removed_snp <- dropLociWithSnps(methyl_set_genomic, snps = c("CpG", "SBE"), maf=0.01)
+print(paste("Probes after removing single nucleotide polymorphisms:", nrow(methyl_set_removed_snp)))
+saveRDS(methyl_set_removed_snp, "methyl_set_removed_snp.rds")
+
+```
