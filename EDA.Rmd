@@ -28,6 +28,7 @@ library(illuminaio)
 library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
 library(DMRcate)
 library(missMethyl)
+library(FlowSorted.Blood.450k)
 ```
 
 ### 3. Create a sample metadata table by reading the respective GSE file
@@ -334,11 +335,28 @@ saveRDS(m_values, "m_values_s_mismatch.rds")
 rm(list = setdiff(ls(), c("targets")))
 ```
 
-### 12. Probe Cleanup
+### 12. Cell Count Estimate
+
+```{r}
+rg_set <- readRDS("rg_set_s_mismatch.rds")
+targets <- readRDS("targets_s_mismatch.rds")
+
+cell_counts <- estimateCellCounts(rg_set, compositeType="Blood", probeSelect="IDOL")
+targets <- cbind(targets, cell_counts)
+
+saveRDS(targets, "targets_s_mismatch_cells.rds")
+```
+
+### 13. Probe Cleanup
+
+```{r}
+rm(list = ls())
+gc(full=T)
+```
 
 *During this step sex-chromosome related probes, SNP's and cross-reactive probes are removed from the methylation data set. Finally, PCA is repeated to view differences related to the pre-cleanup one*.
 
-#### 12.1 Remove Cross-Reactive Probes
+#### 13.1 Remove Cross-Reactive Probes
 **Remove probes that are not specific to one genomic location. Cross-reactive probes can hybridize to multiple places in the genome, making their methylation signals uninterpretable and introducing noise into the analysis.**
 
 i.  Load the library that contains the annotation database specific for the 450k array with detailed information about each probe.
@@ -354,6 +372,7 @@ cross_reactive_probes <- read.csv("https://github.com/sirselim/illumina450k_filt
 cross_reactive <- cross_reactive_probes$TargetID 
 
 methyl_set <- readRDS("methyl_set_s_mismatch.rds")
+targets <- readRDS("targets_s_mismatch_cells.rds")
 
 print(paste("Original probes in dataset:", nrow(getBeta(methyl_set))))
 
