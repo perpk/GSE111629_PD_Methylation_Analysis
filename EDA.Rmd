@@ -417,3 +417,113 @@ methyl_set_final <- methyl_set[autosomal_probes, ]
 print(paste("Probes after removing sex chromosomes:", nrow(methyl_set_final)))
 saveRDS(methyl_set_final, "methyl_set_filtered_chrom.rds")
 ```
+
+
+```{r}
+rm(list=ls())
+gc(full=T)
+```
+
+```{r}
+methyl_set_final <- readRDS("methyl_set_filtered_chrom.rds")
+beta_matrix_final <- getBeta(methyl_set_final)
+m_values_final <- getM(methyl_set_final)
+saveRDS(beta_matrix_final, "beta_matrix_final.rds")
+saveRDS(m_values_final, "m_values_final.rds")
+```
+
+### 14. Re-do PCA on cleaned-up data
+
+```{r}
+rm(list = setdiff(ls(), c("beta_matrix_final")))
+gc(full=T)
+```
+
+```{r}
+targets <- readRDS("targets_s_mismatch_cells.rds")
+pca <- prcomp(t(beta_matrix_final))
+pca_df <- data.frame(
+  PC1 = pca$x[,1],
+  PC2 = pca$x[,2],
+  Sample_Group = targets$Sample_Group,
+  Gender = targets$`gender:ch1`,
+  Age = targets$`age:ch1`,
+  Mono = targets$Mono,
+  Bcell = targets$Bcell,
+  NK = targets$NK,
+  CD4T = targets$CD4T,
+  CD8T = targets$CD8T
+)
+saveRDS(pca_df, "pca_df_clean_celltypes.rds")
+```
+
+### Visualize
+
+#### Visualization by Diagnosis, Sex, Sample and Age
+
+```{r}
+library(ggplot2)
+
+plots <- list()
+plots[[1]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Sample_Group)) +
+  geom_point() + ggtitle("By Diagnosis")
+
+plots[[2]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Gender)) +
+  geom_point() + ggtitle("By Biological Gender")
+
+plots[[3]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = as.factor(1:nrow(pca_df)))) +
+  geom_point() + theme(legend.position = "none") + ggtitle("By Sample")
+
+library(viridis)
+pca_df$Age <- as.numeric(pca_df$Age)
+plots[[4]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = Age)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "Age") +  # Better than default colors
+  ggtitle("PCA Colored by Age") +
+  theme_minimal()
+
+library(gridExtra)
+grid.arrange(grobs = plots, ncol = 2)
+```
+
+#### Visualization by cell types
+
+```{r}
+library(ggplot2)
+library(viridis)
+library(gridExtra)
+
+plots <- list()
+plots[[1]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD4T)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "CD4T") +
+  ggtitle("CD4T") +
+  theme_minimal()
+
+plots[[2]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD4T)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "CD8T") +
+  ggtitle("CD8T") +
+  theme_minimal()
+
+plots[[3]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD4T)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "NK") +
+  ggtitle("NK") +
+  theme_minimal()
+
+plots[[4]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD4T)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "Bcell") +
+  ggtitle("Bcell") +
+  theme_minimal()
+
+plots[[5]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD4T)) +
+  geom_point(size = 3, alpha = 0.8) +
+  scale_color_viridis_c(name = "Mono") +
+  ggtitle("Mono") +
+  theme_minimal()
+
+grid.arrange(grobs = plots, ncol = 2)
+```
+
