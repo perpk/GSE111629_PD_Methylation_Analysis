@@ -623,8 +623,9 @@ print(fdr_matrix)
 
 ```{r}
 library(car)
+targets$Age <- as.numeric(as.character(targets$`age:ch1`))
 
-temp_model <- lm(temp_outcome ~ Sample_Group + CD8T + CD4T + NK + Bcell + Mono + `age:ch1` + `gender:ch1`, data = targets)
+temp_model <- lm(temp_outcome ~ Sample_Group + CD8T + CD4T + NK + Bcell + Mono + Age + `gender:ch1`, data = targets)
 
 temp_outcome <- beta_matrix_final[1, ] 
 
