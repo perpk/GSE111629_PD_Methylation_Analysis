@@ -357,6 +357,7 @@ gc(full=T)
 *During this step sex-chromosome related probes, SNP's and cross-reactive probes are removed from the methylation data set. Finally, PCA is repeated to view differences related to the pre-cleanup one*.
 
 #### 13.1 Remove Cross-Reactive Probes
+
 **Remove probes that are not specific to one genomic location. Cross-reactive probes can hybridize to multiple places in the genome, making their methylation signals uninterpretable and introducing noise into the analysis.**
 
 i.  Load the library that contains the annotation database specific for the 450k array with detailed information about each probe.
@@ -418,7 +419,6 @@ print(paste("Probes after removing sex chromosomes:", nrow(methyl_set_final)))
 saveRDS(methyl_set_final, "methyl_set_filtered_chrom.rds")
 ```
 
-
 ```{r}
 rm(list=ls())
 gc(full=T)
@@ -433,6 +433,8 @@ saveRDS(m_values_final, "m_values_final.rds")
 ```
 
 ### 14. Re-do PCA on cleaned-up data
+
+**The scope of the steps following below is to reveal any biological confounders that might distort further results from downstream analysis if not accounted for**
 
 ```{r}
 rm(list = setdiff(ls(), c("beta_matrix_final")))
@@ -527,3 +529,106 @@ plots[[5]] <- ggplot(pca_df, aes(x = PC1, y = PC2, color = CD4T)) +
 grid.arrange(grobs = plots, ncol = 2)
 ```
 
+### Investigate Cell Types PD vs Controls
+
+```{r}
+library(ggpubr)
+
+cell_types <- c("CD8T", "CD4T", "NK", "Bcell", "Mono")
+cell_results <- list()
+
+for(cell_type in cell_types) {
+  test_result <- wilcox.test(targets[[cell_type]] ~ targets$Sample_Group)
+  
+  cell_results[[cell_type]] <- data.frame(
+    CellType = cell_type,
+    p_value = test_result$p.value,
+    W_statistic = test_result$statistic
+  )
+  
+  p <- ggplot(targets, aes(x = Sample_Group, y = .data[[cell_type]], fill = Sample_Group)) +
+    geom_boxplot(alpha = 0.7) +
+    geom_jitter(width = 0.2, alpha = 0.5) +
+    stat_compare_means(method = "wilcox.test", label = "p.format") +
+    labs(title = paste(cell_type, "Proportions"),
+         y = "Proportion", x = "") +
+    theme_minimal()
+  print(p)
+}
+
+```
+
+```{r}
+cell_summary <- do.call(rbind, cell_results)
+cell_summary$p_adj <- p.adjust(cell_summary$p_value, method = "fdr")
+print("Cell type proportion differences:")
+print(cell_summary)
+```
+
+```{r}
+ggplot(pca_df, aes(x = PC1, y = PC2, color = Sample_Group, size = CD4T)) +
+  geom_point(alpha = 0.7) +
+  scale_size_continuous(name = "CD4T %", range = c(1, 6)) +
+  ggtitle("PCA: Color by Group, Size by Monocyte Proportion") +
+  theme_minimal()
+```
+
+#### Investigate correlation of Cell types to Principal Components
+
+*Here, Pearson correlation is used to obtain the correlation metric*
+
+```{r}
+pc_cell_cor <- cor(pca_df[, c("PC1", "PC2")], 
+                   targets[, cell_types])
+print("Correlation between PCs and cell proportions:")
+print(round(pc_cell_cor, 3))
+```
+
+#### Investigate for statistical significance of correlation
+
+*p-values for the calculated correlation coefficients per cell type are calculated and adjusted via Benjamini-Hochberg method*
+
+```{r}
+pc_cell_cor_p <- matrix(NA, nrow = 2, ncol = length(cell_types))
+colnames(pc_cell_cor_p) <- cell_types
+rownames(pc_cell_cor_p) <- c("PC1", "PC2")
+
+for(i in 1:2) {
+  for(j in 1:length(cell_types)) {
+    cor_test <- cor.test(pca_df[, paste0("PC", i)], 
+                        targets[[cell_types[j]]])
+    pc_cell_cor_p[i, j] <- cor_test$p.value
+  }
+}
+
+print("Correlation p-values:")
+print(pc_cell_cor_p)
+```
+
+```{r}
+fdr_corrected <- p.adjust(pc_cell_cor_p, method = "fdr")
+
+fdr_matrix <- matrix(fdr_corrected, nrow = 2, ncol = length(cell_types))
+colnames(fdr_matrix) <- cell_types
+rownames(fdr_matrix) <- c("PC1", "PC2")
+
+print("FDR-corrected p-values:")
+print(fdr_matrix)
+
+```
+
+#### Assess for multi-collinearity
+
+**The assumed covariants must be assessed for the presence multi-collinearity to avoid issues with downstream statistical analysis.**
+
+```{r}
+library(car)
+
+temp_model <- lm(temp_outcome ~ Sample_Group + CD8T + CD4T + NK + Bcell + Mono + `age:ch1` + `gender:ch1`, data = targets)
+
+temp_outcome <- beta_matrix_final[1, ] 
+
+vif_results <- vif(temp_model)
+print("Variance Inflation Factors (VIF):")
+print(vif_results)
+```
