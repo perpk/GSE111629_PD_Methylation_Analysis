@@ -401,3 +401,19 @@ print(paste("Probes after removing single nucleotide polymorphisms:", nrow(methy
 saveRDS(methyl_set_removed_snp, "methyl_set_removed_snp.rds")
 
 ```
+
+#### 13.3 Remove probes on X and Y chromosomes
+
+```{r}
+rm(list=ls())
+gc(full=T)
+```
+
+```{r}
+methyl_set <- readRDS("methyl_set_removed_snp.rds")
+autosomal_probes <- !(seqnames(methyl_set) %in% c("chrX", "chrY"))
+print(paste("Probes before removing sex chromosomes:", nrow(methyl_set)))
+methyl_set_final <- methyl_set[autosomal_probes, ]
+print(paste("Probes after removing sex chromosomes:", nrow(methyl_set_final)))
+saveRDS(methyl_set_final, "methyl_set_filtered_chrom.rds")
+```
