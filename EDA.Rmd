@@ -3,7 +3,7 @@ title: "EDA"
 output: html_document
 ---
 
-# Differential Methylation Analysis Example (GSE111629)
+# Methylation Exploratory Data Analysis Example (GSE111629; Parkinson's disease)
 
 ### 1. Install the necessary packages for Normalization of raw Methylation profiling data (.idat) and Differential Analysis.
 
@@ -387,6 +387,8 @@ saveRDS(methyl_set, "methyl_set_removed_cross_reactive.rds")
 
 #### 13.2 Remove Single Nucleotide Polymorphisms
 
+**Minor allele frequency set to > 0.01. This means that the most common SNP's are filtered out from the dataset and ultimately from all remaining exploratory steps and further downstream analysis.**
+
 ```{r}
 rm(list=ls())
 gc(full=T)
@@ -632,4 +634,6 @@ temp_outcome <- beta_matrix_final[1, ]
 vif_results <- vif(temp_model)
 print("Variance Inflation Factors (VIF):")
 print(vif_results)
+
+saveRDS(targets, "targets_final.rds")
 ```

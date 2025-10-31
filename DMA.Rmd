@@ -1,0 +1,169 @@
+---
+title: "DMA"
+output: html_document
+---
+
+# Differential Methylation Analysis (GSE111629; Parkinson's disease)
+
+```{r}
+rm(list=ls())
+gc(full=T)
+```
+```{r}
+BiocManager::install("pheatmap")
+```
+
+```{r}
+library(limma)
+library(ggplot2)
+library(pheatmap)
+library(tidyverse)
+```
+
+### 1. Setup design matrix
+
+```{r}
+targets <- readRDS("targets_final.rds")
+targets$`age:ch1` <- as.numeric(targets$`age:ch1`)
+targets$`gender:ch1` <- as.character(targets$`gender:ch1`)
+names(targets)[names(targets) == 'gender:ch1'] <- 'Sex'
+names(targets)[names(targets) == 'age:ch1'] <- 'Age'
+design <- model.matrix(~0 + Sample_Group + 
+                       Sex + 
+                       Age + 
+                       CD8T + CD4T + NK + Bcell + Mono, 
+                       data = targets)
+
+print("Design matrix columns:")
+print(colnames(design))
+```
+
+```{r}
+cor_matrix <- cor(design[, -1])
+heatmap(cor_matrix, 
+        main = "Covariate Correlation Matrix",
+        margins = c(10, 10))
+```
+```{r}
+m_values <- readRDS("m_values_final.rds")
+fit <- lmFit(m_values, design)
+cont.matrix <- makeContrasts(Parkinsons_vs_Control = Sample_GroupPD - Sample_GroupControl, levels = design)
+fit2 <- contrasts.fit(fit, cont.matrix)
+fit2 <- eBayes(fit2)
+results <- topTable(fit2, number = Inf, coef = "Parkinsons_vs_Control")
+print("Sum of statistically significant differentially methylated probes")
+sum(results$adj.P.Val < 0.05 & abs(results$logFC) > 0.2)
+dim(results)
+```
+```{r}
+results$ProbeID <- rownames(results)
+ann_450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+ann_sub <- ann_450k[rownames(results), c("chr", "pos", "UCSC_RefGene_Name", "UCSC_RefGene_Group", "Relation_to_Island")]
+annotated_results <- merge(results, ann_sub, by.x = "ProbeID", by.y = "row.names")
+annotated_results <- annotated_results[order(annotated_results$adj.P.Val, -annotated_results$logFC), ]
+write.csv(annotated_results, "differential_methylation_results.csv", row.names = FALSE)
+```
+
+```{r}
+if (!exists("annotated_results")) {
+  annotated_results <- read.csv("differential_methylation_results.csv", )
+}
+```
+
+```{r}
+volcano_plot <- ggplot(annotated_results, aes(x = logFC, y = -log10(adj.P.Val))) +
+  geom_point(alpha = 0.6, aes(color = (adj.P.Val < 0.05 & abs(logFC) > 0.2))) +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  geom_vline(xintercept = c(-0.2, 0.2), linetype = "dashed") +
+  ggtitle("Volcano Plot of Differential Methylation") +
+  theme_minimal()
+print(volcano_plot)
+```
+
+### TODO: Calculate Δβ and consider filtering further down to a meaningfull threshold
+```{r}
+beta_matrix <- readRDS("beta_matrix_final.rds");
+annotated_filtered <- as.data.frame(annotated_results) %>% filter(abs(logFC) > 0.1 & adj.P.Val < 0.05)
+top_probes <- annotated_filtered$ProbeID[1:10]
+top_beta <- beta_matrix[rownames(beta_matrix) %in% top_probes, ]
+
+annotation_col <- data.frame(Group = targets$Sample_Group)
+rownames(annotation_col) <- colnames(top_beta)
+
+pheatmap(top_beta,
+         annotation_col = annotation_col,
+         show_rownames = T,
+         show_colnames = F,
+         main = "Top 10 Differentially Methylated Probes",
+         scale = "row")
+```
+
+```{r}
+hypo_probes <- annotated_filtered %>% 
+  filter(logFC < -0.3) %>%
+  head(10)
+
+hyper_probes <- annotated_filtered %>% 
+  filter(logFC > 0.3) %>%
+  head(10)
+
+top_probes <- c(hypo_probes$ProbeID, hyper_probes$ProbeID)
+top_beta <- beta_matrix[rownames(beta_matrix) %in% top_probes, ]
+
+pheatmap(top_beta,
+         annotation_col = annotation_col,
+         show_rownames = T,
+         show_colnames = F,
+         main = "Top Hypo and Hyper-Methylated Probes",
+         scale = "row")
+```
+
+```{r}
+pheatmap(top_beta,
+         annotation_col = annotation_col,
+         show_rownames = T,
+         show_colnames = F,
+         main = "Top DMPs - Absolute Beta Values",
+         scale = "none",
+         color = colorRampPalette(c("blue", "white", "red"))(100))
+```
+
+```{r}
+beta_ranges <- apply(top_beta, 1, function(x) {
+  c(mean_PD = mean(x[targets$Sample_Group == "PD"]),
+    mean_Control = mean(x[targets$Sample_Group == "Control"]),
+    delta_beta = mean(x[targets$Sample_Group == "PD"]) - mean(x[targets$Sample_Group == "Control"]))
+})
+print("Actual beta value differences:")
+print(t(beta_ranges))
+```
+
+```{r}
+beta_matrix_filtered <- beta_matrix[rownames(beta_matrix) %in% annotated_filtered$ProbeID, ]
+beta_matrix_t <- as.data.frame(t(beta_matrix_filtered))
+beta_matrix_t <- beta_matrix_t %>%
+  rownames_to_column("row_id") %>%
+  mutate(before_underscore = sub("_.*", "", row_id)) %>%
+  column_to_rownames("before_underscore")
+beta_matrix_t$Sample_Group <- targets$Sample_Group[match(rownames(beta_matrix_t), targets$Sample_Name)]
+```
+
+```{r}
+pd_samples <- rownames(beta_matrix_t[beta_matrix_t$Sample_Group == 'PD', ])
+control_samples <- rownames(beta_matrix_t[beta_matrix_t$Sample_Group == 'Control', ])
+
+beta_matrix_meta <- t(beta_matrix_t[!names(beta_matrix_t) %in% c("row_id", "Sample_Group")])
+
+colnames_pd <- which(colnames(beta_matrix_meta) %in% pd_samples)
+colnames_control <- which(colnames(beta_matrix_meta) %in% control_samples)
+
+mean_beta_pd <- rowMeans(beta_matrix_meta[, colnames_pd], na.rm = TRUE)
+mean_beta_control <- rowMeans(beta_matrix_meta[, colnames_control], na.rm = TRUE)
+
+delta_beta <- mean_beta_pd - mean_beta_control
+
+annotated_filtered$mean_beta_control <- mean_beta_control
+annotated_filtered$mean_beta_pd <- mean_beta_pd
+annotated_filtered$delta_beta <- delta_beta
+
+```
