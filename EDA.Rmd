@@ -1,6 +1,8 @@
 ---
 title: "EDA"
-output: html_document
+output:
+  pdf_document: default
+  html_document: default
 ---
 
 # Methylation Exploratory Data Analysis Example (GSE111629; Parkinson's disease)

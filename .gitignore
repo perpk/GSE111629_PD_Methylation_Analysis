@@ -3,8 +3,9 @@
 .Rapp.history
 .DS_Store
 *.Rproj
-
+.RDataTmp*
 *.rds
+*.csv
 
 GSE111629_RAW/**/*
 

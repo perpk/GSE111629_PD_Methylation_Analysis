@@ -9,6 +9,7 @@ output: html_document
 rm(list=ls())
 gc(full=T)
 ```
+
 ```{r}
 BiocManager::install("pheatmap")
 ```
@@ -18,9 +19,12 @@ library(limma)
 library(ggplot2)
 library(pheatmap)
 library(tidyverse)
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
 ```
 
 ### 1. Setup design matrix
+
+**Design matrix includes apart from biological gender and age also cell proportions on methylation probes as covariants.**
 
 ```{r}
 targets <- readRDS("targets_final.rds")
@@ -38,12 +42,17 @@ print("Design matrix columns:")
 print(colnames(design))
 ```
 
+### 3. Check whether covariants correlate up to a collinear degree
+
 ```{r}
 cor_matrix <- cor(design[, -1])
 heatmap(cor_matrix, 
         main = "Covariate Correlation Matrix",
         margins = c(10, 10))
 ```
+
+### 4. Perform differential analysis on methylation probes
+
 ```{r}
 m_values <- readRDS("m_values_final.rds")
 fit <- lmFit(m_values, design)
@@ -53,8 +62,10 @@ fit2 <- eBayes(fit2)
 results <- topTable(fit2, number = Inf, coef = "Parkinsons_vs_Control")
 print("Sum of statistically significant differentially methylated probes")
 sum(results$adj.P.Val < 0.05 & abs(results$logFC) > 0.2)
-dim(results)
 ```
+
+### 5. Annotate the differentially methylated probes by using the respective 450k methylation array annotation package
+
 ```{r}
 results$ProbeID <- rownames(results)
 ann_450k <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
@@ -70,6 +81,10 @@ if (!exists("annotated_results")) {
 }
 ```
 
+### 6. Visualize the results in a volcano plot
+
+*Thresholds for fold change on M-values and statistical significance is set to absolute 0.2 and 0.05 respectively. The resulting subset is still subject for Δβ value assessment to estimate biological significance.*
+
 ```{r}
 volcano_plot <- ggplot(annotated_results, aes(x = logFC, y = -log10(adj.P.Val))) +
   geom_point(alpha = 0.6, aes(color = (adj.P.Val < 0.05 & abs(logFC) > 0.2))) +
@@ -80,10 +95,14 @@ volcano_plot <- ggplot(annotated_results, aes(x = logFC, y = -log10(adj.P.Val)))
 print(volcano_plot)
 ```
 
-### TODO: Calculate Δβ and consider filtering further down to a meaningfull threshold
+### 7. Visualize beta values of the differentially methylated probes in a heatmap using the top 10 CpG's.
+
+*Here a scale is used instead of absolute values*
+
 ```{r}
 beta_matrix <- readRDS("beta_matrix_final.rds");
-annotated_filtered <- as.data.frame(annotated_results) %>% filter(abs(logFC) > 0.1 & adj.P.Val < 0.05)
+# write.csv(beta_matrix, "./beta_matrix_final.csv")
+annotated_filtered <- as.data.frame(annotated_results) %>% filter(abs(logFC) > 0.2 & adj.P.Val < 0.05)
 top_probes <- annotated_filtered$ProbeID[1:10]
 top_beta <- beta_matrix[rownames(beta_matrix) %in% top_probes, ]
 
@@ -98,25 +117,7 @@ pheatmap(top_beta,
          scale = "row")
 ```
 
-```{r}
-hypo_probes <- annotated_filtered %>% 
-  filter(logFC < -0.3) %>%
-  head(10)
-
-hyper_probes <- annotated_filtered %>% 
-  filter(logFC > 0.3) %>%
-  head(10)
-
-top_probes <- c(hypo_probes$ProbeID, hyper_probes$ProbeID)
-top_beta <- beta_matrix[rownames(beta_matrix) %in% top_probes, ]
-
-pheatmap(top_beta,
-         annotation_col = annotation_col,
-         show_rownames = T,
-         show_colnames = F,
-         main = "Top Hypo and Hyper-Methylated Probes",
-         scale = "row")
-```
+### 8. Visualize *absolute* beta values of the differentially methylated probes in a heatmap using the top 10 CpG's.
 
 ```{r}
 pheatmap(top_beta,
@@ -128,15 +129,7 @@ pheatmap(top_beta,
          color = colorRampPalette(c("blue", "white", "red"))(100))
 ```
 
-```{r}
-beta_ranges <- apply(top_beta, 1, function(x) {
-  c(mean_PD = mean(x[targets$Sample_Group == "PD"]),
-    mean_Control = mean(x[targets$Sample_Group == "Control"]),
-    delta_beta = mean(x[targets$Sample_Group == "PD"]) - mean(x[targets$Sample_Group == "Control"]))
-})
-print("Actual beta value differences:")
-print(t(beta_ranges))
-```
+### 9. Transform beta matrix row names to match with metadata from targets
 
 ```{r}
 beta_matrix_filtered <- beta_matrix[rownames(beta_matrix) %in% annotated_filtered$ProbeID, ]
@@ -146,13 +139,22 @@ beta_matrix_t <- beta_matrix_t %>%
   mutate(before_underscore = sub("_.*", "", row_id)) %>%
   column_to_rownames("before_underscore")
 beta_matrix_t$Sample_Group <- targets$Sample_Group[match(rownames(beta_matrix_t), targets$Sample_Name)]
+beta_matrix_t$Gender <- targets$Sex[match(rownames(beta_matrix_t), targets$Sample_Name)]
+beta_matrix_t$CD8T <- targets$CD8T[match(rownames(beta_matrix_t), targets$Sample_Name)]
+beta_matrix_t$CD4T <- targets$CD4T[match(rownames(beta_matrix_t), targets$Sample_Name)]
+beta_matrix_t$NK <- targets$NK[match(rownames(beta_matrix_t), targets$Sample_Name)]
+beta_matrix_t$Bcell <- targets$Bcell[match(rownames(beta_matrix_t), targets$Sample_Name)]
+beta_matrix_t$Mono <- targets$Mono[match(rownames(beta_matrix_t), targets$Sample_Name)]
+write.csv(beta_matrix_t, "./beta_matrix_filtered_meta.csv")
 ```
+
+### 10. Calculate means per CpG probe for each sample group and calculate Δβ values
 
 ```{r}
 pd_samples <- rownames(beta_matrix_t[beta_matrix_t$Sample_Group == 'PD', ])
 control_samples <- rownames(beta_matrix_t[beta_matrix_t$Sample_Group == 'Control', ])
 
-beta_matrix_meta <- t(beta_matrix_t[!names(beta_matrix_t) %in% c("row_id", "Sample_Group")])
+beta_matrix_meta <- t(beta_matrix_t[!names(beta_matrix_t) %in% c("row_id", "Sample_Group", "Gender", "CD8T", "CD4T", "NK", "Bcell", "Mono")])
 
 colnames_pd <- which(colnames(beta_matrix_meta) %in% pd_samples)
 colnames_control <- which(colnames(beta_matrix_meta) %in% control_samples)
@@ -165,5 +167,18 @@ delta_beta <- mean_beta_pd - mean_beta_control
 annotated_filtered$mean_beta_control <- mean_beta_control
 annotated_filtered$mean_beta_pd <- mean_beta_pd
 annotated_filtered$delta_beta <- delta_beta
+rownames(annotated_filtered) <- annotated_filtered$ProbeID
+annotated_filtered <- annotated_filtered[-1]
+write.csv(annotated_filtered, "annotated_delta_beta.csv", )
+```
 
+### 11. Filter probes that are below a particular Δβ-threshold
+
+**The threshold is based on researcg evidence in particular with analysing whole-blood methylation data for PD. Since Δβ-values of a great magnitude aren't expected in samples expected to reflect a neurodegenerative disease (opposed to cancers samples where such values might emerge as high as 20%) a very low threshold is set to 3% while other studies also go as low as 2% (Latapi et al. 2024).**
+
+> Gonzalez-Latapi, P., Bustos, B., Dong, S., Lubbe, S., Simuni, T., & Krainc, D. (2024). Alterations in Blood Methylome as Potential Epigenetic Biomarker in Sporadic Parkinson’s Disease. Annals of Neurology, 95(6), 1162–1172. <https://doi.org/10.1002/ANA.26923>
+
+```{r}
+annotated_filtered_delta_beta <- annotated_filtered[abs(annotated_filtered$delta_beta) > 0.03, ]
+write.csv(annotated_filtered_delta_beta, file="annotated_filtered_delta_beta.csv")
 ```

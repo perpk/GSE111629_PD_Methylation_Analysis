@@ -1,0 +1,172 @@
+---
+title: "DMR"
+output: html_document
+---
+
+# Analysis of Differentially Methylated Regions
+
+```{r}
+BiocManager::install("DMRcate")
+```
+
+```{r}
+library(DMRcate)
+```
+
+```{r}
+rm(list=ls())
+gc(full=T)
+```
+
+```{r}
+m_values <- readRDS("m_values_final.rds")
+beta_matrix <- readRDS("beta_matrix_final.rds")
+```
+
+```{r}
+targets <- readRDS("targets_final.rds")
+targets$`age:ch1` <- as.numeric(targets$`age:ch1`)
+targets$`gender:ch1` <- as.character(targets$`gender:ch1`)
+names(targets)[names(targets) == 'gender:ch1'] <- 'Sex'
+names(targets)[names(targets) == 'age:ch1'] <- 'Age'
+design <- model.matrix(~Sample_Group + 
+                       Sex + 
+                       Age + 
+                       CD8T + CD4T + NK + Bcell + Mono, 
+                       data = targets)
+rownames(design) <- targets$Sample_Name
+
+print("Design matrix columns:")
+print(colnames(design))
+```
+
+```{r}
+ann <- cpg.annotate(
+  datatype="array",
+  object=m_values,
+  what="M",
+  arraytype="450K",
+  analysis.type="differential",
+  design=design,
+  coef=2,
+  fdr=0.05,
+  betas=beta_matrix
+)
+```
+
+```{r}
+dmrcoutput <- dmrcate(
+  ann,
+  lambda = 500,
+  C = 2,       
+  min.cpgs = 3 
+)
+```
+
+```{r}
+dmrs <- extractRanges(dmrcoutput, genome = "hg19")
+```
+
+```{r}
+length(dmrs)
+print(dmrs)
+```
+```{r}
+dmrs_df <- data.frame(
+  chr = seqnames(dmrs),
+  start = start(dmrs),
+  end = end(dmrs),
+  width = width(dmrs),
+  no.cpgs = dmrs$no.cpgs,
+  min_smoothed_fdr = dmrs$min_smoothed_fdr,
+  Stouffer = dmrs$Stouffer,
+  maxbetafc = dmrs$maxdiff,
+  meanbetafc = dmrs$meandiff
+)
+
+```
+
+```{r}
+print(paste("Successfully converted", nrow(dmrs_df), "DMRs to data frame"))
+print("First few DMRs:")
+head(dmrs_df)
+```
+```{r}
+significant_dmrs <- dmrs_df[
+  dmrs_df$no.cpgs >= 3 &
+  abs(dmrs_df$meanbetafc) > 0.02 &
+  dmrs_df$min_smoothed_fdr < 0.05,
+]
+print(paste("After filtering:", nrow(significant_dmrs), "significant DMRs"))
+write.csv(dmrs_df, "dmr_all.csv")
+write.csv(significant_dmrs, "dmr_sign.csv")
+```
+
+```{r}
+print("Top DMRs and their overlapping genes:")
+head(significant_dmrs[order(significant_dmrs$min_smoothed_fdr), 
+                      c("chr", "start", "end", "meanbetafc")])
+```
+
+
+```{r}
+if (!exists("dmrs_fdf")) {
+  dmrs_df <- read.csv("dmr_all.csv")
+  if (colnames(dmrs_df)[1] == "X") {
+    dmrs_df <- dmrs_df[,-1]
+  }
+}
+```
+
+```{r}
+library(GenomicRanges)
+
+dmr_gr <- makeGRangesFromDataFrame(
+  dmrs_df,
+  start.field = "start",
+  end.field = "end"
+)
+```
+
+```{r}
+anno <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+probe_gr <- makeGRangesFromDataFrame(
+  data.frame(
+    chr = anno$chr,
+    start = anno$pos,
+    end = anno$pos,
+    probe_id = rownames(anno),
+    stringsAsFactors = FALSE
+  ),
+  start.field = "start",
+  end.field = "end",
+  keep.extra.columns = TRUE
+)
+```
+
+```{r}
+dmr_probe_overlaps <- findOverlaps(dmr_gr, probe_gr)
+```
+
+```{r}
+beta_matrix <- readRDS("beta_matrix_final.rds")
+```
+
+```{r}
+dmr_methylation <- matrix(NA, nrow = length(dmr_gr), ncol = ncol(beta_matrix))
+rownames(dmr_methylation) <- paste0("DMR_", 1:length(dmr_gr))
+colnames(dmr_methylation) <- colnames(beta_matrix)
+```
+
+```{r}
+for(i in 1:length(dmr_gr)) {
+  probe_indices <- subjectHits(dmr_probe_overlaps[queryHits(dmr_probe_overlaps) == i])
+  if(length(probe_indices) > 0) {
+    probe_names <- probe_gr$probe_id[probe_indices]
+    existing_probes <- probe_names[probe_names %in% rownames(beta_matrix)]
+    if(length(existing_probes) > 0) {
+      dmr_methylation[i, ] <- colMeans(beta_matrix[existing_probes, , drop = FALSE], na.rm = TRUE)
+    }
+  }
+}
+```

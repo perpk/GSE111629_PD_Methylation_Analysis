@@ -1,0 +1,179 @@
+---
+title: "MethylationEnrichment"
+output: html_document
+---
+
+# Enrichment of results from Differential Methylation Probe Analysis and Differential Methylation Region Analysis.
+
+
+```{r}
+rm(list = ls())
+gc(full=T)
+```
+
+```{r}
+BiocManager::install('annotatr')
+```
+
+```{r}
+library(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+library(GenomicRanges)
+library(ggplot2)
+library(annotatr)
+library(dplyr)
+```
+
+```{r}
+anno <- getAnnotation(IlluminaHumanMethylation450kanno.ilmn12.hg19)
+```
+
+```{r}
+dmp_results <- read.csv("annotated_delta_beta.csv")
+rownames(dmp_results) <- dmp_results$X
+dmp_results <- dmp_results[,-1]
+
+dmrs_df <- read.csv("dmr_all.csv")
+dmrs_df <- dmrs_df[,-1]
+```
+
+```{r}
+dmp_gr <- makeGRangesFromDataFrame(
+  data.frame(
+    chr = dmp_results$chr,
+    start = dmp_results$pos,
+    end = dmp_results$pos,
+    probe_id = rownames(dmp_results),
+    stringsAsFactors = FALSE
+  ),
+  start.field = "start",
+  end.field = "end"
+)
+```
+
+```{r}
+annots <- c('hg19_cpgs', 'hg19_basicgenes', 'hg19_genes_intergenic')
+annotations <- build_annotations(genome = 'hg19', annotations = annots)
+```
+
+```{r}
+dmr_gr <- makeGRangesFromDataFrame(
+  dmrs_df,
+  start.field = "start",
+  end.field = "end"
+)
+```
+
+```{r}
+dmr_annotations <- annotate_regions(
+  regions = dmr_gr,
+  annotations = annotations,
+  ignore.strand = TRUE,
+  quiet = FALSE
+)
+dmr_annot_df <- data.frame(dmr_annotations)
+gene_annotations <- dmr_annot_df[dmr_annot_df$annot.type == "hg19_genes_promoters" | 
+                                 dmr_annot_df$annot.type == "hg19_genes_exons" |
+                                 dmr_annot_df$annot.type == "hg19_genes_introns", ]
+dmr_genes <- gene_annotations %>%
+  group_by(seqnames, start, end) %>%
+  summarise(overlapping_genes = paste(unique(annot.symbol), collapse = ";")) %>%
+  as.data.frame()
+
+dmrs_df <- merge(dmrs_df, dmr_genes, 
+                           by.x = c("chr", "start", "end"), 
+                           by.y = c("seqnames", "start", "end"),
+                           all.x = TRUE)
+```
+
+```{r}
+overlaps <- findOverlaps(dmp_gr, dmr_gr)
+```
+
+```{r}
+integrated_results <- data.frame(
+  DMP_probe = rownames(dmp_results)[queryHits(overlaps)],
+  DMR_index = subjectHits(overlaps),
+  chr = seqnames(dmr_gr[subjectHits(overlaps)]),
+  DMR_start = start(dmr_gr[subjectHits(overlaps)]),
+  DMR_end = end(dmr_gr[subjectHits(overlaps)]),
+  DMP_delta_beta = dmp_results$delta_beta[queryHits(overlaps)],
+  DMR_mean_betafc = dmrs_df$meanbetafc[subjectHits(overlaps)],
+  DMR_max_betafc = dmrs_df$maxbetafc[subjectHits(overlaps)],
+  DMP_adj_pval = dmp_results$adj.P.Val[queryHits(overlaps)],
+  DMP_logFC = dmp_results$logFC[queryHits(overlaps)],
+  DMP_Relation_to_Island = dmp_results$Relation_to_Island[queryHits(overlaps)],
+  DMR_fdr = dmrs_df$min_smoothed_fdr[subjectHits(overlaps)],
+  overlapping_genes = dmrs_df$overlapping_genes[subjectHits(overlaps)],
+  dmp_genes = dmp_results$UCSC_RefGene_Name[subjectHits(overlaps)],
+  stringsAsFactors=F
+)
+
+integrated_results <- integrated_results[!is.na(integrated_results$DMP_probe),]
+write.csv(integrated_results, "dmr_dmp_integrated_results.csv")
+```
+
+```{r}
+ggplot(integrated_results, aes(x = DMP_Relation_to_Island)) +
+  geom_bar() +
+  labs(title = "Distribution of CpG Sites by Relation to Island",
+       x = "Relation to Island",
+       y = "Count of CpG Sites") +
+  theme_minimal()
+```
+
+```{r}
+high_confidence_overlaps <- integrated_results[
+  abs(integrated_results$DMP_delta_beta) > 0.02 &
+  abs(integrated_results$DMR_mean_betafc) > 0.02 &
+  integrated_results$DMP_adj_pval < 0.05 &
+  integrated_results$DMR_fdr < 0.05,
+]
+
+print(paste("High-confidence overlapping signals:", nrow(high_confidence_overlaps)))
+
+high_confidence_overlaps$consistent_effect <- 
+  sign(high_confidence_overlaps$DMP_delta_beta) == sign(high_confidence_overlaps$DMR_mean_betafc)
+print(paste("Probes with consistent effect direction:", 
+            sum(high_confidence_overlaps$consistent_effect)))
+```
+
+```{r}
+high_confidence_overlaps[order(-abs(high_confidence_overlaps$DMR_mean_betafc)), ]
+```
+
+```{r}
+ggplot(high_confidence_overlaps, aes(x = DMP_delta_beta, y = DMR_mean_betafc)) +
+  geom_point(aes(color = consistent_effect), alpha = 0.7) +
+  geom_abline(slope = 1, linetype = "dashed", color = "red") +
+  labs(title = "DMP vs DMR Effect Sizes",
+       x = "DMP Delta Beta",
+       y = "DMR Mean Beta FC",
+       color = "Consistent Effect") +
+  theme_minimal()
+
+print("=== Effect Size Comparison ===")
+print(paste("Mean |DMP delta beta|:", round(mean(abs(high_confidence_overlaps$DMP_delta_beta)), 4)))
+print(paste("Mean |DMR mean betafc|:", round(mean(abs(high_confidence_overlaps$DMR_mean_betafc)), 4)))
+print(paste("Correlation between DMP and DMR effects:", 
+            round(cor(high_confidence_overlaps$DMP_delta_beta,
+                      high_confidence_overlaps$DMR_mean_betafc), 4)))
+```
+
+```{r}
+overlap_genes <- unique(unlist(strsplit(
+  as.character(high_confidence_overlaps$overlapping_genes), ";"
+)))
+overlap_genes <- overlap_genes[overlap_genes != "" & !is.na(overlap_genes)]
+
+print(paste("High-confidence overlapping genes:", length(overlap_genes)))
+print("Top overlapping genes:")
+print(head(overlap_genes))
+
+known_pd_genes <- c("SNCA", "LRRK2", "PARK2", "PINK1", "DJ1", "GBA", "VPS35")
+pd_matches <- intersect(overlap_genes, known_pd_genes)
+
+print(paste("Overlap with known PD genes:", length(pd_matches)))
+if(length(pd_matches) > 0) {
+  print(pd_matches)
+}
+```
